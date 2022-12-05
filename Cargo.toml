@@ -1,0 +1,17 @@
+[package]
+name = "big-decimal"
+version = "0.1.0"
+authors = ["tymofii.s@blaize.tech"]
+edition = "2021"
+
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+near-sdk = "4.0.0"
+borsh = "0.9.3"
+uint = { version = "=0.9.0", default-features = false }
+num-bigint = "0.4.3"
+num-traits = "0.2.15"
