@@ -1,5 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::borsh::maybestd::io::Write;
+
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize, Serializer};
 use num_traits::cast::ToPrimitive;
@@ -12,20 +13,21 @@ uint::construct_uint!(
     pub struct U384(6);
 );
 
-pub const MAX_RATIO: u32 = 10000;
-pub const NUM_DECIMALS: u8 = 24;
-pub const BIG_DIVISOR: u128 = 10u128.pow(NUM_DECIMALS as u32);
-pub const HALF_DIVISOR: u128 = BIG_DIVISOR / 2;
+///  Precision for num value in calculations
+pub const NUM_DECIMALS: u32 = 24;
+/// Precision with which we return the value in f64
+pub const ACCURACY: u128 = 10000u128;
 
-pub type LowU128 = U128;
-pub type WBigDecimal = U128;
-pub type WBalance = U128;
-pub type WRatio = U128;
-
+/// List internal errors
 const PARSE_INT_ERROR: &str = "Parse int error";
 
+/// BigDecimal struct for work with large numbers,
+/// self.0 value,
+/// self.1 num_decimal
+/// # Examples
+/// BigDecimal(2,10) = 2 * 10_u128.pow(10)
 #[derive(Copy, Clone)]
-pub struct BigDecimal(pub U384);
+pub struct BigDecimal(U384, u32);
 
 impl Default for BigDecimal {
     fn default() -> Self {
@@ -38,43 +40,11 @@ impl BigDecimal {
     ///
     /// Basic usage:
     /// let num: u128 = 33
-    /// let res: BigDecimal = BigDecimal::from_ratio(num)
-    /// res / ratio, 33/10000
-    /// res = 0,0033
-    pub fn from_ratio(ratio: u32) -> Self {
-        Self(U384::from(ratio) * U384::from(BIG_DIVISOR) / U384::from(MAX_RATIO))
-    }
-
-    /// # Examples
-    ///
-    /// Basic usage:
-    /// let num: u128 = 33
-    /// let ratio = 10000
-    /// let res: BigDecimal = BigDecimal::from_ratio(num).mul_ratio(ratio);
-    /// res = 33
-    pub fn mul_ratio(&self, ratio: u32) -> Self {
-        Self((self.0 * U384::from(ratio) + U384::from(MAX_RATIO / 2)) / U384::from(MAX_RATIO))
-    }
-
-    /// # Examples
-    ///
-    /// Basic usage:
-    /// let num: u128 = 33
-    /// let ratio = 10000
-    /// let res: BigDecimal = BigDecimal::from_ratio(num).div_ratio(ratio);
-    /// res = 33
-    pub fn div_ratio(&self, ratio: u32) -> Self {
-        Self((self.0 * U384::from(MAX_RATIO) + U384::from(MAX_RATIO / 2)) / U384::from(ratio))
-    }
-
-    /// # Examples
-    ///
-    /// Basic usage:
-    /// let num: u128 = 33
     /// let res: BigDecimal = BigDecimal::from_ratio(num).round_u128();
     /// res = 33
     pub fn round_u128(&self) -> u128 {
-        ((self.0 * U384::from(BIG_DIVISOR)) / U384::from(BIG_DIVISOR)).as_u128()
+        let a = self.0 / U384::from(10_u128.pow(self.1));
+        ((a * U384::from(10_u128.pow(self.1))) / U384::from(10u128.pow(self.1))).as_u128()
     }
 
     /// # Examples
@@ -85,8 +55,14 @@ impl BigDecimal {
     /// res = 33.0
     #[cfg(not(target_arch = "wasm32"))]
     pub fn f64(&self) -> f64 {
-        let base = (self.0 * U384::from(MAX_RATIO.pow(2))).as_u128();
-        (base / MAX_RATIO as u128).to_f64().unwrap() / MAX_RATIO.to_f64().unwrap()
+        let base = self.0.as_u128() / 10_u128.pow(NUM_DECIMALS);
+        let dec =
+            (self.0 * U384::from(ACCURACY) - U384::from(self.0.as_u128() * ACCURACY)).as_u128();
+        let mut dec_f64: f64 = 0.0;
+        if dec > 0 {
+            dec_f64 = dec.to_f64().unwrap() / (ACCURACY * 10_u128.pow(NUM_DECIMALS)) as f64;
+        }
+        base.to_f64().unwrap() + dec_f64
     }
 
     /// # Examples
@@ -96,7 +72,9 @@ impl BigDecimal {
     /// let res: BigDecimal = BigDecimal::from(num).round_mul_u128(2);
     /// res = 132
     pub fn round_mul_u128(&self, rhs: u128) -> u128 {
-        ((self.0 * U384::from(rhs) * U384::from(BIG_DIVISOR)) / U384::from(BIG_DIVISOR)).as_u128()
+        let a = self.0 / U384::from(10_u128.pow(self.1));
+        ((a * U384::from(rhs) * U384::from(10u128.pow(self.1))) / U384::from(10u128.pow(self.1)))
+            .as_u128()
     }
 
     /// # Examples
@@ -106,7 +84,7 @@ impl BigDecimal {
     /// let res: BigDecimal = BigDecimal::from(num).round_mul_u128(2);
     /// res = 132
     pub fn div_u128(&self, rhs: u128) -> BigDecimal {
-        Self(self.0 / U384::from(rhs))
+        Self(self.0 / U384::from(rhs), self.1)
     }
 
     /// # Examples
@@ -114,7 +92,7 @@ impl BigDecimal {
     /// Basic usage:
     /// let zero = BigDecimal::zero()
     pub fn zero() -> Self {
-        Self(U384::zero())
+        Self(U384::zero(), NUM_DECIMALS)
     }
 
     /// # Examples
@@ -123,7 +101,7 @@ impl BigDecimal {
     /// let one: BigDecimal = BigDecimal::one()
     /// one = 10u128.pow(24)
     pub fn one() -> Self {
-        Self(U384::from(BIG_DIVISOR))
+        Self(U384::from(10_u128.pow(NUM_DECIMALS)), NUM_DECIMALS)
     }
 
     /// # Examples
@@ -133,23 +111,30 @@ impl BigDecimal {
     /// let bd: BigDecimal = BigDecimal::from(num).pow(2)
     /// bd = 2025
     pub fn pow(&self, mut exponent: u64) -> Self {
-        let mut x = self.0;
+        let mut x = self.0 / U384::from(10_u128.pow(self.1));
         while exponent != 0 {
             exponent >>= 1;
             if exponent != 0 {
                 x = x * x;
             }
         }
-        Self(x)
+        Self(x * U384::from(10_u128.pow(self.1)), self.1)
     }
 }
 
 impl Display for BigDecimal {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        let a = self.0 / U384::from(10_u128.pow(self.1));
+        let b = (self.0 - a * U384::from(10_u128.pow(self.1))).as_u128();
+        if b > 0 {
+            write!(f, "{}", format!("{}.{:024}", a, b).trim_end_matches('0'))
+        } else {
+            write!(f, "{}", a)
+        }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for BigDecimal {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self)
@@ -158,7 +143,7 @@ impl std::fmt::Debug for BigDecimal {
 
 impl PartialEq<Self> for BigDecimal {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        self.0 .0 == other.0 .0
     }
 }
 
@@ -167,12 +152,13 @@ impl PartialEq<Self> for BigDecimal {
 /// Basic usage:
 /// let num: BigDecimal = BigDecimal::from_str("1000")
 /// num = 1000
+#[cfg(not(target_arch = "wasm32"))]
 impl FromStr for BigDecimal {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let dot_pos = s.find('.');
-        let (int, _dec) = if let Some(dot_pos) = dot_pos {
+        let (int, dec) = if let Some(dot_pos) = dot_pos {
             (
                 &s[..dot_pos],
                 format!("{:0<24}", &s[dot_pos + 1..])
@@ -183,7 +169,13 @@ impl FromStr for BigDecimal {
             (s, 0u128)
         };
         let int = U384::from(int.parse::<u128>().unwrap());
-        Ok(Self(int))
+        if dec >= 10_u128.pow(24) {
+            return Err(String::from("The decimal part is too large"));
+        }
+        Ok(Self(
+            int * U384::from(10_u128.pow(24)) + U384::from(dec),
+            NUM_DECIMALS,
+        ))
     }
 }
 
@@ -211,44 +203,70 @@ impl<'de> Deserialize<'de> for BigDecimal {
 /// # Examples
 ///
 /// Basic usage:
-/// let num: BigDecimal = BigDecimal::from_str(1000_u128)
+/// let num: BigDecimal = BigDecimal::from(1000_u128)
 /// num = 1000
 impl From<u128> for BigDecimal {
     fn from(a: u128) -> Self {
-        Self(U384::from(a))
+        Self(U384::from(a) * U384::from(10_u128.pow(24)), NUM_DECIMALS)
     }
 }
 
 /// # Examples
 ///
 /// Basic usage:
-/// let num: BigDecimal = BigDecimal::from_str(1000_u64)
+/// let num: BigDecimal = BigDecimal::from(1000_u64)
 /// num = 1000
 impl From<u64> for BigDecimal {
     fn from(a: u64) -> Self {
-        Self(U384::from(a))
+        Self(U384::from(a) * U384::from(10_u128.pow(24)), NUM_DECIMALS)
     }
 }
 
 /// # Examples
 ///
 /// Basic usage:
-/// let num: BigDecimal = BigDecimal::from_str(1000_u32)
+/// let num: BigDecimal = BigDecimal::from(1000_u32)
 /// num = 1000
 impl From<u32> for BigDecimal {
     fn from(a: u32) -> Self {
-        Self(U384::from(a))
+        Self(U384::from(a) * U384::from(10_u128.pow(24)), NUM_DECIMALS)
     }
 }
 
 /// # Examples
 ///
 /// Basic usage:
-/// let num: BigDecimal = BigDecimal::from_str(1000_i32)
+/// let num: BigDecimal = BigDecimal::from(1000_i32)
 /// num = 1000
 impl From<i32> for BigDecimal {
     fn from(a: i32) -> Self {
-        Self(U384::from(a))
+        Self(U384::from(a) * U384::from(10_u128.pow(24)), NUM_DECIMALS)
+    }
+}
+
+/// # Examples
+///
+/// Basic usage:
+/// let num: BigDecimal = BigDecimal::from(U128(1000))
+/// num = 1000_U128
+impl From<U128> for BigDecimal {
+    fn from(low_u128: U128) -> Self {
+        Self(
+            U384::from(low_u128.0) * U384::from(10_u128.pow(24)),
+            NUM_DECIMALS,
+        )
+    }
+}
+
+/// # Examples
+///
+/// Basic usage:
+/// let num: BigDecimal = BigDecimal::from(U128(1000))
+/// let res: U128 = U128::from(num)
+/// res = 1000_U128
+impl From<BigDecimal> for U128 {
+    fn from(bd: BigDecimal) -> Self {
+        Self(bd.0.low_u128() / 10_u128.pow(bd.1))
     }
 }
 
@@ -256,7 +274,7 @@ impl Add for BigDecimal {
     type Output = Self;
 
     fn add(self, rhs: BigDecimal) -> Self::Output {
-        Self(self.0 + rhs.0)
+        Self(self.0 + rhs.0, NUM_DECIMALS)
     }
 }
 
@@ -264,7 +282,7 @@ impl Sub for BigDecimal {
     type Output = Self;
 
     fn sub(self, rhs: BigDecimal) -> Self::Output {
-        Self(self.0 - rhs.0)
+        Self(self.0 - rhs.0, NUM_DECIMALS)
     }
 }
 
@@ -272,7 +290,10 @@ impl Mul for BigDecimal {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        Self((self.0 * rhs.0 + U384::from(HALF_DIVISOR)) / U384::from(BIG_DIVISOR))
+        Self(
+            self.0 * rhs.0 + U384::from(10_u128.pow(self.1) / 2) / U384::from(10_u128.pow(self.1)),
+            NUM_DECIMALS,
+        )
     }
 }
 
@@ -280,7 +301,10 @@ impl Div for BigDecimal {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self::Output {
-        Self((self.0 * U384::from(BIG_DIVISOR) + U384::from(HALF_DIVISOR)) / rhs.0)
+        Self(
+            self.0 * U384::from(10_u128.pow(self.1)) + U384::from(10_u128.pow(self.1) / 2) / rhs.0,
+            NUM_DECIMALS,
+        )
     }
 }
 
@@ -334,49 +358,21 @@ impl BorshSerialize for BigDecimal {
 
 impl BorshDeserialize for BigDecimal {
     fn deserialize(buf: &mut &[u8]) -> std::io::Result<Self> {
-        Ok(Self(U384(BorshDeserialize::deserialize(buf)?)))
+        Ok(Self(
+            U384(BorshDeserialize::deserialize(buf)?),
+            NUM_DECIMALS,
+        ))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::{BigDecimal, MAX_RATIO};
+    use crate::BigDecimal;
+    use near_sdk::json_types::U128;
     use std::str::FromStr;
 
     fn get_expect_value() -> u128 {
         33_u128
-    }
-
-    #[test]
-    fn from_ratio_test() {
-        let value = 33;
-        let bd: BigDecimal = BigDecimal::from_ratio(value);
-        assert_eq!(
-            bd * BigDecimal::from(MAX_RATIO),
-            BigDecimal::from(get_expect_value())
-        );
-    }
-
-    #[test]
-    fn mul_ratio_test() {
-        let value = 33;
-        let ratio = 10000;
-        let bd: BigDecimal = BigDecimal::from_ratio(value).mul_ratio(ratio as u32);
-        assert_eq!(
-            bd * BigDecimal::from(MAX_RATIO),
-            BigDecimal::from(get_expect_value())
-        );
-    }
-
-    #[test]
-    fn div_ratio_test() {
-        let value = 33;
-        let ratio = 10000;
-        let bd: BigDecimal = BigDecimal::from_ratio(value).div_ratio(ratio as u32);
-        assert_eq!(
-            bd * BigDecimal::from(MAX_RATIO),
-            BigDecimal::from(get_expect_value())
-        );
     }
 
     #[test]
@@ -415,15 +411,15 @@ mod test {
 
     #[test]
     fn one_test() {
-        let value = 10_u128.pow(24);
-        assert_eq!(BigDecimal::one().round_u128(), value);
+        assert_eq!(format!("{}", BigDecimal::one()), 1.to_string());
+        assert_eq!(BigDecimal::one().round_u128(), 1);
     }
 
     #[test]
     fn pow_test() {
         let value = 22_u128;
         let bd: BigDecimal = BigDecimal::from(value).pow(2);
-        assert_eq!(bd, BigDecimal::from(484));
+        assert_eq!(bd.round_u128(), 484);
     }
 
     #[test]
@@ -473,5 +469,20 @@ mod test {
         let value: i32 = 33;
         let bd = BigDecimal::from(value);
         assert_eq!(bd.round_u128(), get_expect_value());
+    }
+
+    #[test]
+    fn from_U128_test() {
+        let value = U128(33);
+        let res = BigDecimal::from(value);
+        assert_eq!(res, BigDecimal::from(get_expect_value()));
+        assert_eq!(res.round_u128(), get_expect_value());
+    }
+
+    #[test]
+    fn to_U128_test() {
+        let value = 33;
+        let res = BigDecimal::from(value);
+        assert_eq!(U128::from(res), U128(get_expect_value()));
     }
 }
