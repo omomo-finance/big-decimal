@@ -53,7 +53,7 @@ impl BigDecimal {
     /// let num: u128 = 33
     /// let res: BigDecimal = BigDecimal::from_ratio(num).f64();
     /// res = 33.0
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_arch = "wasm32-unknown-unknown"))]
     pub fn f64(&self) -> f64 {
         let base = self.0.as_u128() / 10_u128.pow(NUM_DECIMALS);
         let dec =
@@ -134,7 +134,7 @@ impl Display for BigDecimal {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32-unknown-unknown"))]
 impl std::fmt::Debug for BigDecimal {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self)
@@ -152,7 +152,7 @@ impl PartialEq<Self> for BigDecimal {
 /// Basic usage:
 /// let num: BigDecimal = BigDecimal::from_str("1000")
 /// num = 1000
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32-unknown-unknown"))]
 impl FromStr for BigDecimal {
     type Err = String;
 
